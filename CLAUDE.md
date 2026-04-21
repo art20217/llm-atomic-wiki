@@ -1,314 +1,228 @@
-# CLAUDE.md — Schema for LLMs operating this repo
+# CLAUDE.md — 個人技術知識庫操作規範
 
-You are operating on a knowledge base built on the LLM Wiki pattern (Karpathy 2026), with four optimizations: an atom layer, topic-branch organization, two-layer Lint, and parallel-compile naming locks.
+本知識庫基於 Karpathy（2026）的 LLM Wiki pattern，並採用 cablate 的四項優化（原子層、主題分支、兩層 Lint、平行編譯命名鎖）。  
+知識庫主人為機械工程研發主管，主要處理**工具機設計**相關的技術知識。
 
-This file is the formal spec — read it before touching anything. Mental model, operations, file formats, lifecycle rules, and what you must never do.
+開始任何操作前請完整讀完本文件。
 
 ---
 
-## Mental model
-
-Three storage layers, one navigation layer, one log layer:
+## 心智模型
 
 ```
-raw/                  sources you may read but never write
-atoms/                knowledge atoms, organized by topic-branch
-  <branch-1>/         one folder per topic
-  <branch-2>/         each contains atoms (source of truth)
+raw/                  原始素材，只讀不寫
+atoms/                知識原子，依主題分支組織（source of truth）
+  <branch-1>/
+  <branch-2>/
   ...
-wiki/                 compiled pages from atoms, derived cache
-index.md              auto-generated wiki navigation
-log.md                append-only change history
+wiki/                 從原子編譯的導航頁面（derived cache）
+index.md              自動產生的 wiki 導航
+log.md                append-only 變更紀錄
 ```
 
-Atoms are immutable. Wiki is rebuildable from atoms. If a wiki page is wrong, fix the underlying atom and recompile, never patch the wiki.
-
-Each branch folder under `atoms/` holds the atoms for that topic, plus an optional `_archive/` for superseded atoms.
+**atoms 是唯一的 source of truth。** wiki 頁面寫錯事實時，回去修原子再重新編譯，絕對不直接修改 wiki 頁面。
 
 ---
 
-## Atom format (spec)
+## 原子格式（規範）
 
-### Frontmatter (YAML, required)
+### Frontmatter（YAML，必填）
 
 ```yaml
 ---
 id: <branch>/<descriptive-slug>
-type: explanation | opinion | tutorial | myth-busting | case-study | comparison
-depth: beginner | intermediate | advanced
-source_type: post | reply | thread | transcript | article | note | screenshot | audio
-source_ids: []
+type: spec | design-judgment | explanation | procedure | comparison | case-study
+depth: foundational | working | advanced
+source_type: vendor-manual | vendor-catalog | national-standard | personal-note | llm-assisted | journal
+source_ref: ""
 reuse_score: high | medium | low
 tags: []
 created: YYYY-MM-DD
 ---
 ```
 
-| Field | Notes |
-|-------|-------|
-| `id` | Format `<branch>/<slug>`. Slug all lowercase, hyphens only. Must be unique within branch. |
-| `type` | What kind of knowledge this atom carries. Pick one. |
-| `depth` | Audience level. Used in gap analysis. |
-| `source_type` | Where the raw came from. Extend the enum if your sources differ. |
-| `source_ids` | Stable identifiers (URLs, paths, post IDs). Atoms without source attribution are not auditable. |
-| `reuse_score` | `high` = standalone-publishable, `medium` = needs companions, `low` = niche. |
-| `tags` | Cross-cutting concerns. Used to surface related atoms across branches. |
-| `created` | ISO date. Used for chronological ordering and stale-detection. |
+**各欄位說明**
 
-Optional fields you may add: `confidence` (high/medium/low), `superseded_by` (id of replacement atom), `archived` (boolean).
+`id` 的格式為 `<branch>/<slug>`，slug 使用全小寫英文加連字號，在同一分支內必須唯一。
 
-### Filename
+`type` 是本知識庫最關鍵的欄位，必須嚴格挑選：`spec` 僅限可驗證的規格數值（公式、容許應力、幾何尺寸），**此類型原子適用特殊規則（見下方）**；`design-judgment` 是設計者的主觀評估與決策記錄，非事實陳述；`explanation` 是概念原理說明；`procedure` 是操作步驟；`comparison` 是兩種方法或產品的對比分析；`case-study` 是特定設計問題的解決記錄。
 
-Pattern: `YYYY-MM-DD-<descriptive-slug>.md`
+`source_type` 對應本知識庫的文件來源分類：`vendor-manual`（廠商技術手冊，含計算方法）、`vendor-catalog`（廠商規格型錄，以選型為主）、`national-standard`（國家／產業標準）、`personal-note`（個人整理的設計筆記）、`llm-assisted`（LLM 協助產出的解釋或推導，需標記）、`journal`（設計日誌記錄）。
 
-- Date prefix gives natural chronological order in `ls`.
-- Slug all lowercase, hyphens only — no underscores, no spaces, no uppercase.
-- Slug should be 3–6 words describing the core claim.
+`source_ref` 是可追溯到原始文件的精確參照，格式範例如下：
+- 廠商手冊：`"螺栓緊固. (n.d.). 東日製作所., 頁 31"`
+- 標準規範：`"JIS B 1082"`
+- 個人日誌：`"journal/2024-12-20"`
+- PDF 卡片：`"Heptabase pdfCard: 02_螺栓緊固"`
 
-### Body
+`reuse_score` 的判斷標準：`high` 表示可獨立用於解釋或設計計算，無需補充背景；`medium` 表示需搭配相關原子才完整；`low` 表示情境特定，僅適用於特定設計問題。
 
-- One core claim per atom. If two independent claims share a paragraph, split into two atoms.
-- Refine, don't copy. Strip filler from the source; preserve the author's voice and stance.
-- Cite source at the end if you want traceability beyond `source_ids`.
+### 檔名格式
 
-### Lifecycle (immutable)
+```
+YYYY-MM-DD-<descriptive-slug>.md
+```
 
-Atoms are immutable. Do not edit after creation.
+範例：`2024-12-20-bolt-axial-force-simplified-formula.md`
 
-When knowledge evolves:
-1. Create a new atom with the updated claim.
-2. Add `superseded_by: <new-atom-id>` to the old atom's frontmatter.
-3. Move the old atom to `atoms/<branch>/_archive/`.
-4. Recompile any wiki page that referenced the old atom.
+### 正文規則
 
-Never delete an atom outright. Use `_archive/`. Final deletion is a separate, conscious decision.
-
-See `atoms/_template.md` for a copyable starter.
+一個原子等於一個論點或一條規格。如果一段素材包含兩個可獨立成立的論點，必須拆成兩個原子。精煉，不是複製——去除素材中的填充語言，保留核心知識。
 
 ---
 
-## Wiki page format (spec)
+## ⚠️ spec 類型原子的特殊規則
 
-### Filename
+`type: spec` 的原子在萃取時適用以下**強制要求**，違反任何一條都必須拒絕建立原子：
 
-Pattern: `<branch>-<topic-slug>.md`
+**數值完整性**：所有讓數值成立的前提條件必須完整保留。判斷方式：移除某個條件後，這個數值是否仍然正確？如果答案是「不一定」，該條件就必須保留。只保留數值而省略前提條件是嚴重的資訊損失，可能直接影響設計安全。
 
-- Branch prefix lets `gen-index.sh` group pages.
-- All lowercase, hyphens only.
-- Lives flat in `wiki/`, not in subfolders.
+**範例（正確）：**
+```
+螺栓軸力簡化計算式：Ff = T / (K × d)
+其中 K = 0.2（適用於摩擦係數 μ = 0.15 的情況）
+來源：螺栓緊固. (n.d.). 東日製作所., 頁 31
+```
 
-### First line
+**範例（錯誤，禁止）：**
+```
+螺栓軸力公式：Ff = T / (K × d)，K 取 0.2
+```
+→ 省略了「K = 0.2 僅在 μ = 0.15 時成立」的條件，使原子在其他摩擦係數情境下會被誤用。
 
-Must be `# Title`. `gen-index.sh` reads this for the index entry. Lint flags violations.
+**來源強制標記**：`source_ref` 不得留空。沒有可追溯來源的規格數值不建立 spec 原子，改為建立 `design-judgment` 原子並在正文標記「來源待確認」。
 
-### Wiki links
+---
 
-Pattern: `[[slug]]` or `[[slug|display text]]`
+## wiki 頁面格式（規範）
 
-- The slug must equal an existing wiki filename without `.md`.
-- Lint flags ghost links and orphan pages.
+### 檔名格式
 
-### Body structure
+```
+<branch>-<topic-slug>.md
+```
+
+範例：`bolt-torque-axial-force.md`，放在 `wiki/` 根目錄，不使用子資料夾。
+
+### 必要結構
 
 ```markdown
-# Page Title
+# 頁面標題
 
-Opening paragraph: why this matters, common misconception, what you'll get.
+開場段落：說明這個主題解決什麼設計問題，以及常見的誤解。
 
-## Section
-Integrated content from multiple atoms, written as coherent prose.
-First mention of a related concept gets a [[wiki-link]]; subsequent
-mentions in the same page don't repeat it.
+## 段落一
+整合多個原子的內容，以連貫的技術說明呈現。
+第一次出現的相關概念使用 [[wiki-link]]，同一頁面後續出現不重複連結。
 
-## Section
-Continue.
-
----
-
-**See also**
-- [[related-page]] — one-line description
+## 段落二
+繼續說明。
 
 ---
-*Compiled from atoms: branch/atom-slug-1, branch/atom-slug-2, ...*
+
+**延伸閱讀**
+- [[related-page]] — 一行說明
+
+---
+*本頁編譯自原子：branch/atom-slug-1, branch/atom-slug-2, ...*
 ```
 
-### Length
+### 時效性標記
 
-- Target 1500–2500 words per page.
-- Past 2500 words: consider splitting.
-- Below 800 words: consider merging or staying at atom level.
+時效敏感的技術資訊必須使用明確的時間標記，例如 `截至 2024-12` 或版本號 `JIS B 1082:2009`。避免在時效敏感的陳述中使用「目前」、「現行」、「最新」等詞語。
 
-### Temporal markers
+### 頁面長度
 
-In time-sensitive claims, use one of:
-- Specific date: `as of 2026-04`, `截至 2026-04`
-- Version number: `v3.5`, `Claude 3.5 Sonnet`
-
-Avoid bare `currently` / `latest` / `now` / `目前` / `現在` in time-sensitive contexts. Lint regex flags only `<temporal word> <version/date>` combinations to avoid false-positive flooding from rhetorical use.
-
-See `wiki/_template.md` for a copyable starter.
+目標 1000 到 2000 字（技術內容通常比敘述性內容更精煉）。超過 2000 字考慮拆分；低於 500 字考慮合併或保留在原子層。
 
 ---
 
-## Branch design (spec)
+## 分支設計規範
 
-### When to add a branch (all four required)
+### 開設新分支的四個條件（全部符合才可開設）
 
-1. **Independence** — the topic doesn't fit cleanly under any existing branch.
-2. **Scale** — you expect 5+ atoms in this branch.
-3. **Clear boundary** — you can write a one-paragraph rule for "what belongs, what doesn't".
-4. **Teaching independence** — the branch could anchor a 30-minute talk on its own.
+一是獨立性，主題無法歸入任何現有分支。二是規模，預期至少有 5 個以上的原子。三是邊界清晰，可以用一句話說明「什麼文件屬於這個分支、什麼不屬於」。四是自足性，這個分支的知識可以獨立支撐一個設計計算或技術說明，不依賴其他分支。
 
-If only 1–2 atoms fit a candidate topic, use tags instead.
+如果候選主題只有 1 到 2 個原子，改用 `tags` 標記，不開設新分支。
 
-### When to merge or remove
+### 開設新分支前必須取得使用者確認
 
-- **Hollow** — branch holds <3 atoms with no growth trajectory.
-- **Overlap** — >50% of atoms also tagged with another branch → merge or redefine.
-- **Subset** — branch A's content is essentially a subset of branch B → merge.
-
-### When to split
-
-- **Bloat** — single branch exceeds 30 atoms and content naturally clusters.
-- **Teaching need** — preparing a course reveals the branch needs to split.
-
-### One atom, one branch
-
-If an atom spans two branches, pick the one matching the core claim. Use `tags` for the secondary topic.
-
-### Operations checklist
-
-When adding/merging/splitting:
-1. Document the rationale (one-paragraph note in `log.md`).
-2. Update branch lists in any docs that enumerate them.
-3. Move affected atoms (update their frontmatter `id`).
-4. Confirm no orphan tags or broken `[[ ]]` references remain.
+不得自行發明分支。遇到無法歸類的素材，標記為 `deferred` 並告知使用者，由使用者決定是否開設新分支。
 
 ---
 
-## Operations
+## 操作說明
 
-You execute four operations on demand:
+### Ingest（攝入新素材）
 
-### Ingest
+使用者提供新素材（Heptabase 卡片內容、PDF 摘錄、個人筆記）時，依序執行以下步驟。
 
-User adds new material to `raw/` (or any source location). You read it, classify each segment ("extract" / "skip" / "deferred"), then extract the "extract" segments into atoms under the matching `atoms/<branch>/` folder.
+首先掃描素材，將每個段落標記為 `extract`（值得萃取）、`skip`（噪音或純社交互動）、或 `deferred`（內容不確定或缺乏脈絡）。**不要跳過這個分類步驟直接萃取**，分類品質決定原子品質。
 
-Constraints:
-- One atom equals one claim.
-- Use the frontmatter format above. Do not invent fields.
-- Place atoms in the matching topic-branch. If no branch fits, list as deferred candidate; do not invent branches without user approval.
-- Preserve the author's voice. Personal knowledge base, not neutral encyclopedia.
-- Atoms are immutable once created.
+判斷 `extract` 的標準：這個段落在脫離原始脈絡後仍然具有技術參考價值。以下類型通常應標記 `skip`：待辦事項、問題清單（沒有答案）、純粹的情緒記錄、與技術主題無關的行政內容。
 
-### Compile
+萃取時使用正確的 `type` 和 `source_type`，並填寫 `source_ref`。`spec` 類型適用特殊規則（見上方）。
 
-Take a set of related atoms and produce a wiki page synthesizing them.
+一次萃取完第一批 10 到 20 個片段後，**暫停並請使用者做校準確認**，再繼續後續批次。
 
-Constraints:
-- Group by topic, not one atom per page. Typical wiki page = 3–8 atoms.
-- Filename `<branch>-<topic-slug>.md`, all lowercase, hyphens only.
-- First line must be `# title`.
-- Use `[[wiki-link]]` for cross-references. Slug inside `[[ ]]` must equal an existing wiki filename without `.md`.
-- For temporal claims, use specific dates or version numbers.
-- Footer lists source atoms by id.
+### Compile（編譯 wiki 頁面）
 
-If multiple agents compile in parallel: a coordinator pre-locks the slug list. Each agent fills assigned slugs, never names files.
+將一組相關原子整合成一個 wiki 頁面。3 到 8 個原子為一頁的合理範圍。編譯的邏輯是「讀者想理解什麼」，而不是「一個原子對應一個章節」。
 
-### Query
-
-User asks a question. You read `index.md` to locate relevant wiki pages, load only those (not the whole wiki), and answer based on them. If the answer requires synthesis worth retaining, propose writing it back as a new atom.
-
-Constraints:
-- Do not load the entire wiki by default. Use `index.md` to scope.
-- Cite which pages you drew from.
-- Distinguish "this is in the wiki" from "this is my synthesis on top of the wiki".
-
-### Lint
-
-Two layers, run in order:
-
-**Programmatic Lint** (`scripts/lint.sh`) — runs first, no LLM needed. Checks ghost links, orphan pages, format violations, outdated markers. Output: `lint-report.md`.
-
-**LLM Lint** — runs after programmatic Lint passes. Read `index.md` plus all wiki pages and check:
-- **Contradictions** — page A says "X is best practice", page B says "X is deprecated". Flag both with paths and quoted segments.
-- **Concept gaps** — multiple pages reference a concept that has no dedicated page. Propose as candidate.
-- **Expired claims** — version numbers, dates, temporal markers in time-sensitive contexts. Verify or flag.
-- **Weak orphans** — pages with weak conceptual link to the rest, even if technically linked.
-
-Append findings to `lint-report.md` under an `## LLM Lint` section, sorted by severity (contradictions > concept gaps > expired claims > weak orphans).
-
----
-
-## After every change
-
-Run these in order:
-
+編譯完成後執行：
 ```bash
-./scripts/gen-index.sh                    # rebuild index
-./scripts/log-append.sh "what you did"    # record change
+./scripts/gen-index.sh
+./scripts/lint.sh
+./scripts/log-append.sh "compile: <page-name>"
 ```
 
-Then if you compiled or modified wiki pages:
+### Query（查詢）
 
-```bash
-./scripts/lint.sh                         # programmatic Lint
-```
+讀取 `index.md` 定位相關頁面，只載入必要的頁面，不預設載入整個 wiki。回答時標明引用的頁面來源，並明確區分「wiki 中已有的內容」和「我在 wiki 基礎上做的推論」。
 
-If `lint.sh` reports errors (not just warnings), fix them before declaring done.
+如果查詢產生了值得保留的新整合分析，主動提議將其寫回為新原子。
 
----
+### Lint（健康檢查）
 
-## Source attribution patterns
-
-Three options for `source_ids`:
-
-```yaml
-# URL-based (public content)
-source_ids: ["https://example.com/post/12345"]
-
-# File-based (private materials)
-source_ids: ["lectures/2026-04-12-skill-design.md"]
-
-# Hash-based (when source stability matters)
-source_ids: ["sha256:abc123..."]
-```
-
-Use hash IDs when you need to detect that a source was modified after extraction.
+兩層依序執行。程式層先跑：`./scripts/lint.sh`，檢查幽靈連結、孤立頁面、格式違規，輸出 `lint-report.md`。LLM 層後跑：讀取 `index.md` 加上所有 wiki 頁面，檢查語意矛盾（特別是不同原子對同一規格的陳述是否一致）、過期技術聲明、以及有被多個頁面引用但尚無專屬頁面的概念。
 
 ---
 
-## What you must not do
+## 來源標記格式參考
 
-- **Edit atoms after creation.** They are immutable. Create a new atom, archive the old one.
-- **Write to `raw/`.** It is read-only from your perspective.
-- **Invent branches without user approval.** Branch design has independence/scale/boundary criteria.
-- **Use bold/italic to compensate for unclear writing.** If a sentence needs emphasis to be understood, rewrite the sentence.
-- **Patch wiki pages to hide atom-layer problems.** If the wiki is wrong because an atom is wrong, fix the atom.
-- **Compile in parallel without a slug lock.** You will produce naming collisions.
-- **Treat the wiki as source of truth.** It is a derived cache. The atoms are truth.
-- **Silently delete atoms or wiki pages.** Move to `_archive/`, never `rm`.
-
----
-
-## Customizing for your domain
-
-The defaults ship with reasonable opinionated choices. To adapt:
-
-- **Add `source_type` values** for your sources (e.g. `email`, `slack`, `obsidian`).
-- **Add `type` values** if your knowledge has categories beyond the seven defaults.
-- **Adjust temporal regex** in `scripts/lint.sh` to match your conventions.
-- **Define your own branch boundary table** in your fork's `STORY.md` or methodology notes.
-- **Tune length thresholds** if your wiki style is denser or looser than 1500–2500 words.
-
-Document any deviation — rules and scripts are coupled, divergence without documentation will confuse future contributors (including future-you).
+| 素材類型 | `source_ref` 格式範例 |
+|---|---|
+| 廠商手冊（Heptabase 卡片整理） | `"螺栓緊固. (n.d.). 東日製作所., 頁 31"` |
+| 廠商手冊（PDF 直接攝入） | `"Heptabase pdfCard: 02_螺栓緊固, p.XX"` |
+| 國家／產業標準 | `"JIS B 1082:2009"` |
+| 個人設計日誌 | `"journal/2024-12-20"` |
+| 公式書 | `"陳正宏. (n.d.). 機械公式之原理及活用. 復漢出版社., 頁 25"` |
+| LLM 協助推導 | `"llm-assisted: 螺紋幾何公式推導, 2024-12"` |
 
 ---
 
-## When in doubt
+## 禁止事項
 
-Defer to the user. This repo represents their knowledge, organized to their standards. Your job is to operate the pipeline reliably, not to make judgment calls about what their knowledge should look like. If something feels ambiguous, surface it instead of guessing.
+原子建立後不得修改，知識演進時建立新原子並將舊原子移至 `_archive/`，同時在舊原子 frontmatter 加上 `superseded_by: <new-id>`。
+
+`raw/` 目錄不得寫入，只可讀取。
+
+未取得使用者確認前不得開設新分支。
+
+spec 類型的原子不得省略讓數值成立的前提條件，這是不可妥協的規則。判斷標準：移除某個條件後數值是否仍然成立？不成立則必須保留。
+
+wiki 頁面的錯誤必須追溯到原子層修正，不得在 wiki 層直接修補。
+
+不得靜默刪除任何原子或 wiki 頁面，必須移至 `_archive/`。
+
+平行編譯時不得自行命名檔案，必須使用預先鎖定的 slug 清單。
 
 ---
 
-*This schema corresponds to Karpathy's CLAUDE.md role in the original LLM Wiki gist, extended with the four optimizations this repo adds (atom layer, topic-branches, two-layer Lint, parallel-compile naming locks).*
+## 不確定時的處理原則
+
+遇到任何分類或萃取的模糊情況，優先詢問使用者，不要自行做判斷後繼續。這個知識庫代表使用者的設計知識，標準由使用者定義，不由 LLM 自行推斷。
+
+---
+
+*本文件基於 cablate/llm-atomic-wiki 的 CLAUDE.md 框架，針對工具機研發工程師的個人技術知識庫情境客製化。schema 的核心邏輯源自 Karpathy（2026）的 LLM Wiki pattern。*
